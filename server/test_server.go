@@ -4,14 +4,12 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -29,9 +27,10 @@ const (
 )
 
 var (
-	host         = flag.String("addr", "http://localhost:8080", "Local server URL (e.g. http://localhost:8080)")
+	localaddr    = flag.String("local", "0.0.0.0:8080", "Local server (e.g. 0.0.0.0:8080)")
+	host         = flag.String("addr", "localhost:8080", "Remote address to use (e.g. 192.168.0.1:8080)")
 	dbPath       = flag.String("db", fmt.Sprintf("%s.db", PROJECT), "Path to database file")
-	templatePath = flag.String("templates", "templates", "Path to templates")
+	templatePath = flag.String("templates", "template", "Path to templates")
 	db           *sql.DB
 	logger       logWriter
 )
@@ -61,67 +60,115 @@ func (r *logWriter) Log(str string, arg ...interface{}) {
 }
 
 type command struct {
-	Action   string      `json:"action"`
-	Argument interface{} `json:"arg"`
+	Action string      `json:"action"`
+	Args   interface{} `json:"arg"`
 }
+
+const STORE_INSERT = `insert or abort into pings (url, touch) values (?, strftime('now');`
+const STORE_CREATE = `create table if not exists pings (url string primary key, version integer, touch integer);`
 
 type store struct {
 	log *logWriter
 	db  *sql.DB
-	cmd chan []byte
+	Cmd chan *command
+}
+
+func (s *store) init() (err error) {
+	_, err = s.db.Exec(STORE_CREATE)
+	return
+}
+
+func (s *store) Add(url string) (err error) {
+	_, err = s.db.Exec(`insert or abort into pings (url, touched) values(?, now());`, url)
+	return
+}
+
+func (s *store) Del(url string) (err error) {
+	_, err = s.db.Exec(`delete from pings where url=?;`, url)
+	return
+}
+
+func (s *store) Pings() (pings []string, err error) {
+	log.Printf("Querying... \n")
+	var ping string
+	rows, err := s.db.Query(`select url from pings;`)
+	defer rows.Close()
+	if err != nil {
+		return
+	}
+	for rows.Next() {
+		if err = rows.Scan(&ping); err == nil {
+			return
+		}
+		pings = append(pings, ping)
+	}
+	return
 }
 
 func (s *store) run() {
-	var err error
 	for {
 		select {
-		case c := <-s.cmd:
-			if len(c) == 0 {
-				continue
+		case c := <-s.Cmd:
+			switch c.Action {
+			case "query":
+				pings, err := s.Pings()
+				log.Printf("pings: %+v, %s\n", pings, err)
+				if err != nil {
+					s.log.Error("Could not get pings: %s", err.Error())
+				}
+				if pings == nil {
+					c.Args = []string{}
+				} else {
+					c.Args = pings
+				}
+			case "add":
+				err := s.Add(c.Args.(string))
+				c.Args = err
+			case "del":
+				err := s.Del(c.Args.(string))
+				c.Args = err
 			}
-			cmd := command{}
-			err = json.Unmarshal(c, &cmd)
-			if err != nil {
-				e, _ := json.Marshal(command{
-					Action:   "error",
-					Argument: err.Error(),
-				})
-				s.cmd <- e
-			}
-			switch strings.ToLower(cmd.Action) {
-			default:
-				e, _ := json.Marshal(command{
-					Action:   "error",
-					Argument: "Unsupported command",
-				})
-				s.cmd <- e
-			}
+			s.Cmd <- c
 		}
 	}
 }
 
 type hub struct {
 	connections map[*connection]bool
-	broadcast   chan []byte
+	pings       map[string]string
+	broadcast   chan *command
 	register    chan *connection
 	unregister  chan *connection
-	db          *sql.DB
+	cmd         chan *command
 	log         *logWriter
+	s           *store
 }
 
 var h = hub{
-	broadcast:   make(chan []byte),
+	broadcast:   make(chan *command),
+	cmd:         make(chan *command),
 	register:    make(chan *connection),
 	unregister:  make(chan *connection),
 	connections: make(map[*connection]bool),
 }
 
 func (h *hub) Count() int {
-	return len(h.connections)
+	return len(h.pings)
+}
+
+func (h *hub) AddPing(pushurl string) (err error) {
+	h.s.Cmd <- &command{Action: "add", Args: pushurl}
+	rep := <-h.s.Cmd
+	return rep.Args.(error)
+}
+
+func (h *hub) Broadcast(cmd *command) {
+	b, _ := json.Marshal(cmd)
+	h.broadcast <- &command{Action: "alert", Args: b}
 }
 
 func (h *hub) run(st *store) {
-	h.db = st.db
+	h.s = st
 	for {
 		select {
 		case c := <-h.register:
@@ -132,28 +179,36 @@ func (h *hub) run(st *store) {
 			if _, ok := h.connections[c]; ok {
 				h.log.Log("Unregistering...")
 				delete(h.connections, c)
-				close(c.cmd)
+				close(c.chat)
 			}
 		case m := <-h.broadcast:
 			h.log.Log("Broadcasting...")
-			m = bytes.Map(func(r rune) rune {
-				if r < ' ' {
-					return -1
-				}
-				return r
-			}, m)
 			for c := range h.connections {
-				c.cmd <- m
+				c.chat <- m
 			}
+		case c := <-h.cmd:
+			h.log.Log("proxying client command %+v", *c)
+			h.s.Cmd <- c
+			r := <-h.s.Cmd
+			h.cmd <- r
 		}
 	}
 }
 
 type connection struct {
-	ws  *websocket.Conn
-	cmd chan []byte
-	db  *sql.DB
-	log *logWriter
+	ws   *websocket.Conn
+	chat chan *command
+	cmd  chan *command
+	log  *logWriter
+}
+
+func (c *connection) Reply(cmd *command) {
+	rep, err := json.Marshal(cmd)
+	if err == nil {
+		c.ws.WriteMessage(websocket.TextMessage, rep)
+		return
+	}
+	c.log.Error("Could not write message: %s", err.Error())
 }
 
 func (c *connection) reader() {
@@ -166,12 +221,31 @@ func (c *connection) reader() {
 			return
 		}
 
-		cmd := command{}
+		cmd := &command{}
 		if err := json.Unmarshal(raw, &cmd); err != nil {
 			c.log.Error("Could not process command %s", string(raw))
 			return
 		}
-		switch strings.ToLower(cmd.Action)[:2] {
+		switch strings.ToLower(cmd.Action) {
+		case "hello":
+			// hello command
+			c.cmd <- &command{Action: "query"}
+			repl := <-c.cmd
+			var pings []string
+			var count int
+			if repl.Args != nil {
+				pings = repl.Args.([]string)
+				count = len(pings)
+			}
+			log.Printf("reply hello: %+v", repl)
+			c.Reply(&command{Action: "hello",
+				Args: struct {
+					Clients []string
+					Count   int
+				}{pings, count}})
+		case "interval":
+			// TODO:change ping interval
+
 		default:
 			c.log.Error("Unknown Command sent from client %+v", cmd)
 		}
@@ -179,8 +253,9 @@ func (c *connection) reader() {
 }
 
 func (c *connection) writer() {
-	for command := range c.cmd {
-		err := c.ws.WriteMessage(websocket.TextMessage, command)
+	for chat := range c.chat {
+		out, _ := json.Marshal(chat)
+		err := c.ws.WriteMessage(websocket.TextMessage, out)
 		if err != nil {
 			break
 		}
@@ -203,9 +278,10 @@ func wsHandler(resp http.ResponseWriter, req *http.Request) {
 	}
 
 	conn := &connection{
-		cmd: make(chan []byte, CHANNELS),
-		ws:  ws,
-		log: &logger,
+		chat: make(chan *command, CHANNELS),
+		cmd:  h.cmd,
+		ws:   ws,
+		log:  &logger,
 	}
 
 	logger.Log("Connecting to %s", req.RemoteAddr)
@@ -229,8 +305,11 @@ func main() {
 
 	st := &store{
 		db:  db,
-		cmd: make(chan []byte),
+		Cmd: make(chan *command),
 		log: logger,
+	}
+	if err = st.init(); err != nil {
+		log.Fatal("Could not create storage: %s", err.Error())
 	}
 
 	go st.run()
@@ -247,7 +326,7 @@ func main() {
 	http.HandleFunc("/", func(resp http.ResponseWriter, req *http.Request) {
 		logger.Log("index page")
 		// display a fatal
-		t, err := template.ParseFiles(filepath.Join(*templatePath, "index.tmpl"))
+		t, err := template.ParseFiles(filepath.Join(*templatePath, "index.html"))
 		if err != nil {
 			fatal(resp, err)
 			return
@@ -259,17 +338,34 @@ func main() {
 		return
 	})
 
+	http.HandleFunc("/reg", func(resp http.ResponseWriter, req *http.Request) {
+		if req.Method != "POST" {
+			http.Error(resp, "Use POST", 405)
+			return
+		}
+		pingUrl := req.PostFormValue("sp")
+		if pingUrl == "" {
+			logger.Error(`Please POST the simplepush url as "sp"`)
+			http.Error(resp, `Missing "sp" url value`, 400)
+			return
+		}
+		if err := h.AddPing(pingUrl); err != nil {
+			logger.Error("Could not add ping url: %s", err.Error())
+			http.Error(resp, `Could not add ping.`, 500)
+			h.Broadcast(&command{Action: "error",
+				Args: "Could not add ping"})
+		}
+	})
+
+	http.Handle("/s/",
+		http.StripPrefix("/s/",
+			http.FileServer(http.Dir("static"))))
+
 	// Socket for page updates.
 	http.HandleFunc("/ws", wsHandler)
 
-	hostAddr, err := url.Parse(*host)
-	if err != nil {
-		logger.Error("Invalid host argument: %s", err.Error())
-		return
-	}
-
-	logger.Log("Staring up server at %s\n", hostAddr.Host)
-	if err := http.ListenAndServe(hostAddr.Host, nil); err != nil {
+	logger.Log("Staring up server at %s\n", *localaddr)
+	if err := http.ListenAndServe(*localaddr, nil); err != nil {
 		logger.Error("Server failed: %s", err.Error())
 	}
 }
