@@ -83,6 +83,11 @@ func (s *store) Add(url string) (err error) {
 	return
 }
 
+func (s *store) Ack(url string) (err error) {
+	_, err = s.db.Exec(`update or abort pings (url, touched) values (?, now());`, url)
+	return
+}
+
 func (s *store) Del(url string) (err error) {
 	_, err = s.db.Exec(`delete from pings where url=?;`, url)
 	return
@@ -124,6 +129,9 @@ func (s *store) run() {
 			case "add":
 				err := s.Add(c.Args.(string))
 				c.Args = err
+			case "ack":
+				err := s.Ack(c.Args.(string))
+				c.Args = err
 			case "del":
 				err := s.Del(c.Args.(string))
 				c.Args = err
@@ -156,8 +164,8 @@ func (h *hub) Count() int {
 	return len(h.pings)
 }
 
-func (h *hub) AddPing(pushurl string) (err error) {
-	h.s.Cmd <- &command{Action: "add", Args: pushurl}
+func (h *hub) Proxy(action, pushurl string) (err error) {
+	h.s.Cmd <- &command{Action: action, Args: pushurl}
 	rep := <-h.s.Cmd
 	return rep.Args.(error)
 }
@@ -338,8 +346,33 @@ func main() {
 		return
 	})
 
+	http.HandleFunc("/ack", func(resp http.ResponseWriter, req *http.Request) {
+		resp.Header.Add("Access-Control-Allow-Origin", "*")
+		var action = "ack"
+		if req.Method == "DELETE" {
+			action = "del"
+		}
+		if req.Method == "OPTIONS" {
+			http.Error(resp, "", 200)
+			return
+		}
+		pingUrl := req.PostFormValue("sp")
+		if pingUrl == "" {
+			logger.Error(`Please POST the simplepush url as "sp"`)
+			http.Error(resp, `Missing "sp" url value`, 400)
+			return
+		}
+		if err := h.Proxy(action, pingUrl); err != nil {
+			logger.Error("Could not handle ping url: %s", err.Error())
+			http.Error(resp, `Could not handle ping.`, 500)
+			h.Broadcast(&command{Action: "error",
+				Args: "Could not handle ping"})
+		}
+	})
+
 	http.HandleFunc("/reg", func(resp http.ResponseWriter, req *http.Request) {
-		if req.Method != "POST" {
+		resp.Header.Add("Access-Control-Allow-Origin", "*")
+		if req.Method != "POST" || req.Method != "OPTIONS" {
 			http.Error(resp, "Use POST", 405)
 			return
 		}
@@ -349,7 +382,7 @@ func main() {
 			http.Error(resp, `Missing "sp" url value`, 400)
 			return
 		}
-		if err := h.AddPing(pingUrl); err != nil {
+		if err := h.Proxy("add", pingUrl); err != nil {
 			logger.Error("Could not add ping url: %s", err.Error())
 			http.Error(resp, `Could not add ping.`, 500)
 			h.Broadcast(&command{Action: "error",
