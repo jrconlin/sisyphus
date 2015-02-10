@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="UTF8" />
+<title>Sisyphus - SimplePush tester</title>
+<link type="text/css" rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Sisyphus</h1>
+<h2>Simplepush client tester</h2>
+<div id="status">
+    <p id="state">Initializing...</p>
+    <div id="active" class="active hidden">
+        <p>Next ping in <span id="timeout"> ... <span id="period">seconds</span></span></p>
+</div>
+</div>
+<div id="config" class="active hidden" >
+    <form>
+        <label for="timer">Interval:<input type="range" value="5" min="1" max="300" step="1" name="timer" oninput="document.getElementById('t_val').innerHTML=this.value;"/><span id="t_val">5</span>
+            <select name="interval"
+                onchange="document.getElementById('period').innerHTML=this.options[this.selectedIndex].label">
+                <option value="1" default>seconds</option>
+                <option value="60">minutes</option>
+                <option value="360">hours</option>
+            </select>
+            </label>
+            <button id="set_timer">Set</button>
+    </form>
+</div>
+<audio src="/s/buzz.ogg" id="buzz" />
+<audio src="/s/ping.ogg" id="ping" />
+<audio src="/s/disconnect.ogg" id="disconnect" />
+<script lang="javascript">
+    var ws;
+    var period = {length:60000, label:"minutes"};
+
+
+    function doReset(msg) {
+        document.getElementById("buzz").play();
+        doUpdate(msg);
+    }
+
+
+    function toggleActive() {
+        elements = document.getElementsByClassName("active");
+        for (i=0;i<elements;i++) {
+            elements[i].classList.toggle("hidden");
+        }
+    }
+
+    function updateClock() {
+        var ll = document.getElementById("length");
+        var v = parseInt(ll.innerHTML);
+        if (isNaN(v)) { v = 0 }
+        ll.innerHTML = v + 1;
+    }
+
+    function doUpdate(msg) {
+        document.getElementById("length").innerHTML = msg.last;
+        document.getElementById("prev").innerHTML = msg.previous;
+    }
+
+    function setState(msg) {
+        document.getElementById("state").innerHTML = msg
+    }
+
+    document.getElementById("ping").addEventListener("click", function(ev) {
+            try {
+            ws.send(JSON.stringify({"action":"ping"}));
+            } catch (x) {
+                console.error(x)
+            }
+            return true;
+            });
+    // open the websocket connection;
+
+if (window.WebSocket == undefined) {
+    // Bitch that they've got an old, crappy browser.
+}
+ws = new WebSocket("ws://{{.Host}}/ws");
+ws.onopen = function(e) {
+    console.log("Connected, sending hello");
+    this.send(JSON.stringify({"action":"hello"}))
+}
+ws.onmessage = function(e) {
+    console.log("Got message: ", e.data);
+    try {
+        msg = JSON.parse(e.data);
+        switch (msg.action) {
+            case "hello":
+                var cnt = msg.arg.ClientCount || "no";
+                setState("Connected with " + cnt + " clients")
+                break;
+            case "connected":
+                toggleActive();
+                break;
+            default:
+                console.error("Unknown message", msg);
+        }
+    } catch (x) {
+        console.error("Unknown exception", x)
+    }
+};
+ws.onclose = function(e) {
+    document.getElementById("disconnect").play();
+    toggleActive();
+    alert("Uh-oh. lost connection.");
+
+    console.log("Closing connection", e);
+};
+ws.onerror = function(e) {
+    console.error("ERROR::", e);
+};
+
+</script>
+
+</body>
+</html>
