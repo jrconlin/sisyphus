@@ -1,29 +1,37 @@
 var endpoint;
 
-function Log(s) {
+function Log(s, cls) {
   console.log(s)
-  txt = document.createTextNode(s);
-  document.getElementById("log").appendChild(txt);
+  var txt = document.createTextNode(s);
+  var p = document.createElement("p");
+  p.className=cls
+  p.appendChild(txt);
+  document.getElementById("status").appendChild(p);
 }
 
 function send(s, path='/reg', method='POST') {
   var host = document.getElementById("server").value;
+  if (!host.startsWith('http')) {
+      host = 'http://'+ host;
+  }
   var name = document.getElementById("name").value;
-  if host == "" {
-    Log ("Host not specified")
+  if (host == "") {
+    Log ("Host not specified","error")
     return false
   }
   var post = new XMLHttpRequest();
   post.open(method, host + path);
+  post.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
   post.onload=function(e) {
     if (this.status != 200) {
-      Log("Error: " + JSON.stringify(e))
+      Log("Error !200: " + JSON.stringify(e) + JSON.stringify(this))
     }
+    Log("Registered.")
   }
   post.onerror=function(e) {
-    Log("Error: " + e)
+    Log("Error. Check server log.", "error")
   }
-  post.send("sp="+encodeURIComponent(host)+"&name="+encodeURIComponent(name));
+  post.send("sp="+encodeURIComponent(s)+"&name="+encodeURIComponent(name));
   return true
 }
 
@@ -37,25 +45,29 @@ function setMessageHandler() {
     send(endpoint, '/ack', 'DELETE')
     doRegister()
   })
+  Log("Message Handler Set.")
 }
 
 function doRegister() {
+  Log("Registering...")
   var req = navigator.push.register();
   req.onsuccess = function(e) {
     endpoint = req.result;
     Log("Endpoint:" + endpoint)
     send(endpoint, '/reg')
   }
+  req.onerror = function(e) {
+      Log("Registration error: " + JSON.stringify(e), "error");
+      return;
+  }
 }
 
 // main
-if (!navigator.push  || !navigator.mozSetMessageHandler) {
-  alert("Sorry, push is not available");
-  document.getElementsByTagName("body").innerHTML="<h1>Sorry, push is not available.</h1>";
-  return;
+if (!navigator.push && !navigator.mozSetMessageHandler) {
+  document.getElementById("config").style.display="none";
+  Log("No push service.")
+} else {
+    setMessageHandler();
+    document.getElementById("go").addEventListener("click", doRegister, true)
 }
-
-setMessageHandler();
-document.getElementById("go").addEventListener("click", doRegister, true)
-
 

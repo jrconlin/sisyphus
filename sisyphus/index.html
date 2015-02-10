@@ -4,13 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,user-scalable=no,initial-scale=1">
 
-    <title>Hello World</title>
-
-    <style>
-      body {
-        border: 1px solid black;
-      }
-    </style>
+    <title>Sisyphus Client</title>
+    <link rel="stylesheet" href="style.css"/>
 
     <!-- Inline scripts are forbidden in Firefox OS apps (CSP restrictions),
          so we use a script file. -->
@@ -21,12 +16,12 @@
   <body>
     <!-- This code is in the public domain. Enjoy! -->
     <h1>Sisyphus Client</h1>
-    <h2>Config</h2>
-    <form>
-      <div class="row"><label for="server">Server<input id="server" placeholder="sisyphus.server.com:8080" /></label></div>
+    <div id="config">
+      <h2>Config</h2>
+      <div class="row"><label for="server">Server<input id="server" placeholder="sisyphus.server.com:8080" value="192.168.56.10:8080" /></label></div>
       <div class="row"><label for="name">Name<input id="name" placeholder="Optional friendly name" /></label></div>
       <div class="row control"><button id="go">Go!</button></div>
-    </form>
+    </div>
     <div id="status">
       Not Connected.
     <div>

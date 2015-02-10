@@ -1,0 +1,6 @@
+* {padding:0; margin:0}
+html {font-family: Arial}
+h2{font-size:110%;}
+.error {color:#c00;font-weight:bold;}
+#config {margin-left:1em;border-left:2px solid green;}
+#status {display:block;font-family:"courier new",monospace;max-height:60%;width:100%;overflow:scroll;font-size:80%;}

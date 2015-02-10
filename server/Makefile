@@ -3,7 +3,7 @@ DEPS:=$(CURDIR)/.godeps
 GOPATH:=$(DEPS):$(CURDIR)
 GO:= GOPATH=$(GOPATH) go
 
-.PHONY: all build
+.PHONY: all
 
 $(DEPS):
 	$(GO) get
@@ -15,4 +15,7 @@ build: $(DEPS)
 
 test:
 	$(GO) test -v .
+
+run: $(DEPS)
+	$(GO) run test_server.go
 

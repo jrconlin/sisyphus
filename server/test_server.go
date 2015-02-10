@@ -4,14 +4,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"database/sql"
 	"github.com/gorilla/websocket"
@@ -79,12 +82,12 @@ func (s *store) init() (err error) {
 }
 
 func (s *store) Add(url string) (err error) {
-	_, err = s.db.Exec(`insert or abort into pings (url, touched) values(?, now());`, url)
+	_, err = s.db.Exec(`insert or abort into pings (url, touch) values(?, strftime('now'));`, url)
 	return
 }
 
 func (s *store) Ack(url string) (err error) {
-	_, err = s.db.Exec(`update or abort pings (url, touched) values (?, now());`, url)
+	_, err = s.db.Exec(`update or abort pings (url, touch) values (?, strftime('now'));`, url)
 	return
 }
 
@@ -98,6 +101,7 @@ func (s *store) Pings() (pings []string, err error) {
 	var ping string
 	rows, err := s.db.Query(`select url from pings;`)
 	defer rows.Close()
+
 	if err != nil {
 		return
 	}
@@ -107,6 +111,16 @@ func (s *store) Pings() (pings []string, err error) {
 		}
 		pings = append(pings, ping)
 	}
+	return
+}
+
+func (s *store) ping(url string, body io.Reader) (err error) {
+	client := &http.Client{}
+	req, err := http.NewRequest("PUT", url, body)
+	if err != nil {
+		return
+	}
+	_, err = client.Do(req)
 	return
 }
 
@@ -120,6 +134,7 @@ func (s *store) run() {
 				log.Printf("pings: %+v, %s\n", pings, err)
 				if err != nil {
 					s.log.Error("Could not get pings: %s", err.Error())
+					continue
 				}
 				if pings == nil {
 					c.Args = []string{}
@@ -135,6 +150,20 @@ func (s *store) run() {
 			case "del":
 				err := s.Del(c.Args.(string))
 				c.Args = err
+			case "ping":
+				pings, err := s.Pings()
+				if err != nil {
+					s.log.Error("Could not get pings: %s", err.Error())
+					continue
+				}
+				ver := time.Now().UTC().Unix()
+				body := bytes.NewBufferString(fmt.Sprintf("version=%d", ver))
+				for _, ping := range pings {
+					err := s.ping(ping, body)
+					if err != nil {
+						s.log.Error("Could not PUT to %s", ping)
+					}
+				}
 			}
 			s.Cmd <- c
 		}
@@ -148,6 +177,7 @@ type hub struct {
 	register    chan *connection
 	unregister  chan *connection
 	cmd         chan *command
+	ping        chan int
 	log         *logWriter
 	s           *store
 }
@@ -157,6 +187,7 @@ var h = hub{
 	cmd:         make(chan *command),
 	register:    make(chan *connection),
 	unregister:  make(chan *connection),
+	ping:        make(chan int),
 	connections: make(map[*connection]bool),
 }
 
@@ -167,7 +198,10 @@ func (h *hub) Count() int {
 func (h *hub) Proxy(action, pushurl string) (err error) {
 	h.s.Cmd <- &command{Action: action, Args: pushurl}
 	rep := <-h.s.Cmd
-	return rep.Args.(error)
+	if rep.Args != nil {
+		return rep.Args.(error)
+	}
+	return nil
 }
 
 func (h *hub) Broadcast(cmd *command) {
@@ -177,6 +211,18 @@ func (h *hub) Broadcast(cmd *command) {
 
 func (h *hub) run(st *store) {
 	h.s = st
+	period := 5
+
+	go func(period *int) {
+		for {
+			select {
+			case <-time.After(time.Second * time.Duration(*period)):
+				h.s.Cmd <- &command{Action: "ping"}
+				_ = <-h.s.Cmd
+			}
+		}
+	}(&period)
+
 	for {
 		select {
 		case c := <-h.register:
@@ -199,6 +245,10 @@ func (h *hub) run(st *store) {
 			h.s.Cmd <- c
 			r := <-h.s.Cmd
 			h.cmd <- r
+		case p := <-h.ping:
+			period = p
+			h.s.Cmd <- &command{Action: "ping"}
+			_ = <-h.s.Cmd
 		}
 	}
 }
@@ -221,6 +271,7 @@ func (c *connection) Reply(cmd *command) {
 
 func (c *connection) reader() {
 	defer c.ws.Close()
+
 	for {
 		_, raw, err := c.ws.ReadMessage()
 		log.Printf("Message: %s\n", raw)
@@ -251,9 +302,11 @@ func (c *connection) reader() {
 					Clients []string
 					Count   int
 				}{pings, count}})
-		case "interval":
-			// TODO:change ping interval
-
+		case "ping":
+			c.cmd <- cmd
+			repl := <-c.cmd
+			log.Printf("reply ping: %+v", repl)
+			c.Reply(repl)
 		default:
 			c.log.Error("Unknown Command sent from client %+v", cmd)
 		}
@@ -347,7 +400,7 @@ func main() {
 	})
 
 	http.HandleFunc("/ack", func(resp http.ResponseWriter, req *http.Request) {
-		resp.Header.Add("Access-Control-Allow-Origin", "*")
+		resp.Header().Add("Access-Control-Allow-Origin", "*")
 		var action = "ack"
 		if req.Method == "DELETE" {
 			action = "del"
@@ -371,17 +424,27 @@ func main() {
 	})
 
 	http.HandleFunc("/reg", func(resp http.ResponseWriter, req *http.Request) {
-		resp.Header.Add("Access-Control-Allow-Origin", "*")
-		if req.Method != "POST" || req.Method != "OPTIONS" {
-			http.Error(resp, "Use POST", 405)
+		resp.Header().Add("Access-Control-Allow-Origin", "*")
+		if req.Method == "OPTIONS" {
 			return
 		}
-		pingUrl := req.PostFormValue("sp")
+		if req.Method != "POST" {
+			http.Error(resp, fmt.Sprintf("Use POST: %s", req.Method), 405)
+			return
+		}
+		/*		fmt.Printf("%+v\n", req.Header)
+				buff := make([]byte, 1024)
+				req.Body.Read(buff)
+				req.Body.Close()
+				fmt.Printf("body: %s", buff)
+		*/
+		pingUrl := req.FormValue("sp")
 		if pingUrl == "" {
 			logger.Error(`Please POST the simplepush url as "sp"`)
 			http.Error(resp, `Missing "sp" url value`, 400)
 			return
 		}
+		logger.Log("Trying %s", pingUrl)
 		if err := h.Proxy("add", pingUrl); err != nil {
 			logger.Error("Could not add ping url: %s", err.Error())
 			http.Error(resp, `Could not add ping.`, 500)
