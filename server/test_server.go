@@ -20,6 +20,8 @@ import (
 
 	"database/sql"
 	"github.com/gorilla/websocket"
+	//Since sqlite doesn't do the sort of locking I thought it did,
+	//tempted to just make the storage in-memory.
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -32,11 +34,11 @@ const (
 )
 
 var (
-	port         = flag.String("port", "8080", "Local server [8080]")
-	host         = flag.String("host", "localhost", "Remote address to use [localhost]")
-	dbPath       = flag.String("db", fmt.Sprintf("%s.db", PROJECT), "Path to database file [.]")
-	templatePath = flag.String("templates", "template", "Path to templates [./template]")
-	period       = flag.Int64("period", 30, "Seconds between server pings [30]")
+	port         = flag.String("port", "8080", "Port to use ")
+	host         = flag.String("host", "localhost", "Remote address to identify as")
+	dbPath       = flag.String("db", fmt.Sprintf("%s.db", PROJECT), "Path to database file")
+	templatePath = flag.String("templates", "template", "Path to templates")
+	period       = flag.Int64("period", 30, "Seconds between server pings")
 	db           *sql.DB
 	logger       logWriter
 )
@@ -140,11 +142,14 @@ func (s *store) Hello() (pings []*pingReply, err error) {
 	return
 }
 
+/** Ping all known devices
+ */
 func (s *store) Pings() (pings []*pingReply, err error) {
 	pings, err = s.Hello()
 	if err != nil {
 		return
 	}
+	// If you want to add data=, this is where you'd do it.
 	body := bytes.NewBufferString(fmt.Sprintf("version=%d", time.Now().UTC().Unix()))
 	for _, pr := range pings {
 		if pr.State == "ping" {
@@ -152,12 +157,12 @@ func (s *store) Pings() (pings []*pingReply, err error) {
 		} else {
 			pr.State = "ping"
 		}
-		go s.ping(pr.URL, body)
+		go s.sendping(pr.URL, body)
 	}
 	return
 }
 
-func (s *store) ping(url string, body io.Reader) (err error) {
+func (s *store) sendping(url string, body io.Reader) (err error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("PUT", url, body)
 	if err != nil {
@@ -174,6 +179,10 @@ func (s *store) ping(url string, body io.Reader) (err error) {
 	return
 }
 
+/** Process individual commands
+*
+* called from "hub" which should be a singleton.
+ */
 func (s *store) Cmd(c *command) *command {
 	s.Lock()
 	defer s.Unlock()
@@ -258,6 +267,8 @@ func (h *hub) pinger() {
 func (h *hub) run(st *store, period *int64) {
 	h.s = st
 
+	// Ping timer.
+	// TODO: ought to make this adjustable.
 	go func(period *int64) {
 		for {
 			select {
@@ -375,6 +386,7 @@ func wsHandler(resp http.ResponseWriter, req *http.Request) {
 	conn.reader()
 }
 
+//===
 func main() {
 	var err error
 	flag.Parse()
