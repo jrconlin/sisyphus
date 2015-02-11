@@ -1,12 +1,16 @@
 * {font-family:"Fira Sans",Arial,Helvetica,"sans serif";margin:0;padding:0;}
-html, body{ background-color:#F9F9F9;}
+html, body{ background-color:#F9F9F9; max-width:500px;margin:0 auto;}
 .hidden {display:none;}
 #config{display:none;}
 .warn {background-color:yellow;}
 .ack {background-color:green;}
 #time {min-width:2ex;display:inline-block; text-align:right;}
-.offline{background-color:red;}
+.offline{color:red;}
 #state{margin-top:.5em;}
 #status{margin: 1em;}
 #result{margin:.5em 0;border:1px solid #ddd;}
-#result td{min-width: 6em;}
+#result td{min-width: 10em;}
+#result th{text-align:left;}
+.ping p {display:inline-block;}
+.ping button {border:0; padding:5px;border-radius:10px;}
+#alert {margin-left:2em;}

@@ -9,14 +9,15 @@
 <h1>Sisyphus</h1>
 <h2>Simplepush client tester</h2>
 <div id="status">
-    <label><input type="checkbox" id="alert" />Play next alert</label>
-    <div id="ping" class="active">
+    <div class="ping active hidden">
         <p>Next ping in <span id="time">{{.Period}}</span> <span id="period">seconds</span></p>
         <p><button id="ping">Ping now</button></p>
+        <p><label><input type="checkbox" id="alert" />Alert Noise</label></p>
     </div>
     <p id="state">Initializing...</p>
-<table id="result">
-</table>
+    <table class="active hidden" id="result">
+        <tr><th>Name:</th><th>Seconds since ping</th><th>Status</th><tr>
+    </table>
 </div>
 <div id="config" class="hidden" >
     <form>
@@ -40,21 +41,9 @@
 
     function toggleActive() {
         elements = document.getElementsByClassName("active");
-        for (i=0;i<elements;i++) {
+        for (i=0;i<elements.length;i++) {
             elements[i].classList.toggle("hidden");
         }
-    }
-
-    function updateClock() {
-        var ll = document.getElementById("length");
-        var v = parseInt(ll.innerHTML);
-        if (isNaN(v)) { v = 0 }
-        ll.innerHTML = v + 1;
-    }
-
-    function doUpdate(msg) {
-        document.getElementById("length").innerHTML = msg.last;
-        document.getElementById("prev").innerHTML = msg.previous;
     }
 
     function setState(msg) {
@@ -69,82 +58,100 @@
         }
     }
 
-    document.getElementById("ping").addEventListener("click", function(ev) {
-            try {
-            ws.send(JSON.stringify({"action":"ping"}));
-            } catch (x) {
-                console.error(x)
-            }
-            return true;
-            });
-
-function updateClient(url, name, pinged, state="") {
-    if (pinged == undefined) {
-        pinged = Math.floor(Date.now()/1000);
-    }
-    var rows = document.getElementById("result").getElementsByTagName("tr");
-    if (rows.length > 0) {
-        for (var i=0;i<rows.length; i++) {
-            var row = rows[i];
-            row.getElementsByClassName("name").innerHtml=name;
-            if (state == "offline") {
-                buzz();
-                row.className = "offline";
-                return
-            } else {
-            if (row.dataset.url == url) {
-                row.classList.remove("error");
-                row.classList.remove("pinged");
-                row.classList.add("pinged");
-                return
-            }
+    function updateClient(url, name, pinged, state="") {
+        if (pinged == undefined) {
+            pinged = Math.floor(Date.now()/1000);
+        }
+        var rows = document.getElementById("result").getElementsByTagName("tr");
+        if (rows.length > 0) {
+            for (var i=1;i<rows.length; i++) {
+                var row = rows[i];
+                if (row.dataset.url == url) {
+                    row.getElementsByClassName("name").innerHtml=name;
+                    if (state == "offline") {
+                        buzz();
+                        row.className = "offline";
+                        return
+                    } else {
+                        row.classList.remove("error");
+                        row.classList.remove("pinged");
+                        row.classList.add("pinged");
+                        return
+                    }
+                }
             }
         }
+        addRow(url, name, pinged, state)
     }
-    addRow(url, name, pinged, state)
-}
 
-function addRow(url, name, pinged, state="") {
-    var table = document.getElementById("result");
-    var tr = document.createElement("tr");
-    var now = Math.floor(Date.now()/1000);
-    var cls
-    if (state != "ack") {
-        cls = "warn";
+    function addRow(url, name, pinged, state="") {
+        var table = document.getElementById("result");
+        var tr = document.createElement("tr");
+        var now = Math.floor(Date.now()/1000);
+        var cls
+        if (state != "ack") {
+            cls = "warn";
+        }
+        if ((now - pinged) > period.length * 2) {
+            cls = "error";
+            buzz()
+        }
+        if (state != "") {
+            tr.classList.add(state);
+        }
+        tr.classList.add(cls);
+        tr.setAttribute("data-url",url);
+        tr.innerHTML="<td class='name'>"+name+"</td><td class='pinged'>"+(now-pinged)+"</td><td class='state'>"+state+"</td>";
+        table.appendChild(tr);
     }
-    if ((now - pinged) > period.length * 2) {
-        cls = "error";
-        buzz()
-    }
-    if (state != "") {
-        tr.classList.add(state);
-    }
-    tr.classList.add(cls);
-    tr.setAttribute("data-url",url);
-    tr.innerHTML="<td class='name'>"+name+"</td><td class='pinged'>"+(now-pinged)+"</td><td class='state'>"+state+"</td>";
-    table.appendChild(tr);
-}
 
-function showClients(clientList) {
-    var cls = "";
-    clientList.sort().forEach(
-            function(val) {
-                updateClient(val.URL, val.Name, val.Pinged, val.State)
-                if (val.State == "offline") {
-                    buzz()
-               }
-            })
-}
+    function showClients(clientList) {
+        var cls = "";
+        clientList.sort().forEach(
+                function(val) {
+                    updateClient(val.URL, val.Name, val.Pinged, val.State)
+                    if (val.State == "offline") {
+                        buzz()
+                   }
+                })
+    }
+
+    function countdown() {
+        var t = document.getElementById("time");
+        try {
+        var v = parseInt(t.innerHTML);
+        if (isNaN(v)) {
+            console.error("NaN");
+            return
+        }
+        if (v > 0) {
+            t.innerHTML = v - 1
+        }
+        } catch(e) {
+            console.error(e)
+        }
+    }
 
     // open the websocket connection;
 if (window.WebSocket == undefined) {
-    // Bitch that they've got an old, crappy browser.
+    alert("Please use a modern browser.")
 }
+
+document.getElementById("ping").addEventListener("click", function(ev) {
+        try {
+            ws.send(JSON.stringify({"action":"ping"}));
+        } catch (x) {
+            console.error(x)
+        }
+        return true;
+   });
 
 ws = new WebSocket("ws://{{.Host}}/ws");
 ws.onopen = function(e) {
     console.log("Connected, sending hello");
-    this.send(JSON.stringify({"action":"hello"}))
+    toggleActive();
+    this.send(JSON.stringify({"action":"hello"}));
+
 }
 ws.onmessage = function(e) {
     console.log("Got message: ", e.data);
@@ -184,25 +191,7 @@ ws.onerror = function(e) {
     console.error("ERROR::", e);
 };
 
-function countdown() {
-    var t = document.getElementById("time");
-    try {
-    var v = parseInt(t.innerHTML);
-    if (isNaN(v)) {
-        console.error("NaN");
-        return
-    }
-    if (v > 0) {
-        t.innerHTML = v - 1
-    }
-    } catch(e) {
-        console.error(e)
-    }
-}
-
 var t = setInterval("countdown()", 1000);
-
 </script>
-
 </body>
 </html>
