@@ -106,7 +106,7 @@ func (s *store) Add(info *pingReply) (err error) {
 }
 
 func (s *store) upd(state, url string) (err error) {
-	c, err := s.db.Exec(STORE_UPDATE, state, url)
+	_, err = s.db.Exec(STORE_UPDATE, state, url)
 	if err != nil {
 		s.log.Error("Upd %s", err.Error())
 	}
