@@ -1,5 +1,6 @@
-/* Insert Moz Header
- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 package main
 
@@ -30,10 +31,11 @@ const (
 )
 
 var (
-	localaddr    = flag.String("local", "0.0.0.0:8080", "Local server (e.g. 0.0.0.0:8080)")
-	host         = flag.String("addr", "localhost:8080", "Remote address to use (e.g. 192.168.0.1:8080)")
-	dbPath       = flag.String("db", fmt.Sprintf("%s.db", PROJECT), "Path to database file")
-	templatePath = flag.String("templates", "template", "Path to templates")
+	port         = flag.String("port", "8080", "Local server [8080]")
+	host         = flag.String("host", "localhost", "Remote address to use [localhost]")
+	dbPath       = flag.String("db", fmt.Sprintf("%s.db", PROJECT), "Path to database file [.]")
+	templatePath = flag.String("templates", "template", "Path to templates [./template]")
+	period       = flag.Int64("period", 30, "Seconds between server pings [30]")
 	db           *sql.DB
 	logger       logWriter
 )
@@ -65,6 +67,8 @@ func (r *logWriter) Log(str string, arg ...interface{}) {
 type command struct {
 	Action string       `json:"action"`
 	Args   []*pingReply `json:"arg"`
+	Xtra   interface{}  `json:"xtra"`
+	Error  string
 }
 
 type pingReply struct {
@@ -72,12 +76,15 @@ type pingReply struct {
 	Pinged int64
 	State  string
 	Name   string
-	Error  string
 }
 
 const STORE_INSERT = `insert or abort into pings (url, name, pinged, state) values (?, ?, strftime('%s', 'now'), 'new');`
 const STORE_CREATE = `create table if not exists pings (url string primary key,name string, version integer, pinged integer, state string);`
+const STORE_UPDATE = `update pings set state=? where url=?;`
+const STORE_DELETE = `delete from pings where url=?;`
+const STORE_QUERY = `select url,name, pinged, state from pings;`
 
+//===
 type store struct {
 	log *logWriter
 	db  *sql.DB
@@ -91,25 +98,31 @@ func (s *store) init() (err error) {
 
 func (s *store) Add(info *pingReply) (err error) {
 	_, err = s.db.Exec(STORE_INSERT, info.URL, info.Name)
+	if err != nil {
+		s.log.Error("Add %s", err.Error())
+	}
 	return
 }
 
-func (s *store) Ack(url string) (err error) {
-	_, err = s.db.Exec(`update or abort pings set state='ack' where url=?;`, url)
+func (s *store) upd(state, url string) (err error) {
+	_, err = s.db.Exec(STORE_UPDATE, state, url)
 	if err != nil {
-		s.log.Error("ERROR %s", err.Error())
+		s.log.Error("Upd %s", err.Error())
 	}
 	return
 }
 
 func (s *store) Del(url string) (err error) {
-	_, err = s.db.Exec(`delete from pings where url=?;`, url)
+	_, err = s.db.Exec(STORE_DELETE, url)
+	if err != nil {
+		s.log.Error("Del %s", err.Error())
+	}
 	return
 }
 
 func (s *store) Hello() (pings []*pingReply, err error) {
 	pings = []*pingReply{}
-	rows, err := s.db.Query(`select url,name,pinged,state from pings;`)
+	rows, err := s.db.Query(STORE_QUERY)
 	defer rows.Close()
 	if err != nil {
 		s.log.Error("Pings: %s", err.Error())
@@ -132,7 +145,6 @@ func (s *store) Pings() (pings []*pingReply, err error) {
 		return
 	}
 	body := bytes.NewBufferString(fmt.Sprintf("version=%d", time.Now().UTC().Unix()))
-	fmt.Printf("### pings: %+v\n", pings)
 	for _, pr := range pings {
 		if pr.State == "ping" {
 			pr.State = "offline"
@@ -157,10 +169,9 @@ func (s *store) ping(url string, body io.Reader) (err error) {
 	_, err = client.Do(req)
 	if err == nil {
 		s.log.Log("updating %s\n", url)
-		_, err = s.db.Exec(`update pings set pinged=strftime('%s','now'), state='ping' where url=?;`, url)
-		if err != nil {
-			s.log.Error("ERROR: %s\n", err.Error())
-		}
+		err = s.upd("ping", url)
+	} else {
+		s.log.Error("Failed to push %s", err.Error())
 	}
 	return
 }
@@ -184,15 +195,15 @@ func (s *store) run() {
 			case "add":
 				if err := s.Add(c.Args[0]); err != nil {
 					s.log.Error("Could not add url %s", err.Error())
-					c.Args[0].Error = err.Error()
+					c.Error = err.Error()
 				}
 			case "ack":
-				if err := s.Ack(c.Args[0].URL); err != nil {
-					c.Args[0].Error = err.Error()
+				if err := s.upd("ack", c.Args[0].URL); err != nil {
+					c.Error = err.Error()
 				}
 			case "del":
 				if err := s.Del(c.Args[0].URL); err != nil {
-					c.Args[0].Error = err.Error()
+					c.Error = err.Error()
 				}
 			case "ping":
 				pings, err := s.Pings()
@@ -203,14 +214,16 @@ func (s *store) run() {
 						c.Args = pings
 					}
 				} else {
-					c.Args = []*pingReply{&pingReply{Error: err.Error()}}
+					c.Error = err.Error()
 				}
+				c.Xtra = struct{ Period int64 }{*period}
 			}
 			s.Cmd <- c
 		}
 	}
 }
 
+//===
 type hub struct {
 	connections map[*connection]bool
 	pings       map[string]string
@@ -218,9 +231,9 @@ type hub struct {
 	register    chan *connection
 	unregister  chan *connection
 	cmd         chan *command
-	ping        chan int
 	log         *logWriter
 	s           *store
+	period      int64
 }
 
 var h = hub{
@@ -228,12 +241,7 @@ var h = hub{
 	cmd:         make(chan *command),
 	register:    make(chan *connection),
 	unregister:  make(chan *connection),
-	ping:        make(chan int),
 	connections: make(map[*connection]bool),
-}
-
-func (h *hub) Count() int {
-	return len(h.pings)
 }
 
 func (h *hub) Proxy(action string, ci *pingReply) (rep *command) {
@@ -245,24 +253,22 @@ func (h *hub) Broadcast(cmd *command) {
 	h.broadcast <- cmd
 }
 
-func (h *hub) pinger(period int) {
-	h.s.Cmd <- &command{Action: "ping"}
-	r := <-h.s.Cmd
-	h.broadcast <- r
+func (h *hub) pinger() {
+	rep := h.Proxy("ping", &pingReply{})
+	h.broadcast <- rep
 }
 
-func (h *hub) run(st *store) {
+func (h *hub) run(st *store, period *int64) {
 	h.s = st
-	period := 30
 
-	go func(period *int) {
+	go func(period *int64) {
 		for {
 			select {
 			case <-time.After(time.Second * time.Duration(*period)):
-				h.pinger(*period)
+				h.pinger()
 			}
 		}
-	}(&period)
+	}(period)
 
 	for {
 		select {
@@ -282,16 +288,15 @@ func (h *hub) run(st *store) {
 				c.chat <- m
 			}
 		case c := <-h.cmd:
-			h.log.Log("proxying client command %+v", *c)
+			// do this directly in case there's a bunch of content in Args
 			h.s.Cmd <- c
 			r := <-h.s.Cmd
 			h.cmd <- r
-		case p := <-h.ping:
-			h.pinger(p)
 		}
 	}
 }
 
+// ===
 type connection struct {
 	ws   *websocket.Conn
 	chat chan *command
@@ -310,26 +315,19 @@ func (c *connection) Reply(cmd *command) {
 
 func (c *connection) reader() {
 	defer c.ws.Close()
-
 	for {
 		_, raw, err := c.ws.ReadMessage()
 		if err != nil {
 			c.log.Error("Reader failure %s", err.Error())
 			return
 		}
-
 		cmd := &command{}
 		if err := json.Unmarshal(raw, &cmd); err != nil {
 			c.log.Error("Could not process command %s", string(raw))
 			return
 		}
 		switch strings.ToLower(cmd.Action) {
-		case "hello":
-			// hello command
-			c.cmd <- &command{Action: "hello"}
-			repl := <-c.cmd
-			c.Reply(repl)
-		case "ping":
+		case "hello", "ping":
 			c.cmd <- cmd
 			repl := <-c.cmd
 			c.Reply(repl)
@@ -400,7 +398,7 @@ func main() {
 	}
 
 	go st.run()
-	go h.run(st)
+	go h.run(st, period)
 
 	fatal := func(resp http.ResponseWriter, err error) {
 		const errTmpl = "Could not render index page: %s"
@@ -418,16 +416,22 @@ func main() {
 			fatal(resp, err)
 			return
 		}
-		err = t.Execute(resp, struct{ Host string }{Host: *host})
+		wsHost := fmt.Sprintf("%s:%s", *host, *port)
+		err = t.Execute(resp, struct {
+			Host   string
+			Period int64
+		}{Host: wsHost, Period: *period})
 		if err != nil {
 			fatal(resp, err)
 		}
 		return
 	})
 
+	// Push Client ACK handler
 	http.HandleFunc("/ack", func(resp http.ResponseWriter, req *http.Request) {
 		resp.Header().Add("Access-Control-Allow-Origin", "*")
 		var action = "ack"
+		// future use.
 		if req.Method == "DELETE" {
 			action = "del"
 		}
@@ -445,8 +449,8 @@ func main() {
 		logger.Log("Sending ack for %s", name)
 		rep := h.Proxy(action, &pingReply{URL: pingUrl,
 			Name: name, State: "ack"})
-		if rep.Args[0].Error != "" {
-			logger.Error("Could not add ping url: %s", rep.Args[0].Error)
+		if rep.Error != "" {
+			logger.Error("Could not add ping url: %s", rep.Error)
 			http.Error(resp, `Could not add ping.`, 500)
 			rep.Action = "error"
 			h.Broadcast(rep)
@@ -455,6 +459,7 @@ func main() {
 		h.Broadcast(rep)
 	})
 
+	// Push Client Registration callback
 	http.HandleFunc("/reg", func(resp http.ResponseWriter, req *http.Request) {
 		resp.Header().Add("Access-Control-Allow-Origin", "*")
 		if req.Method == "OPTIONS" {
@@ -473,8 +478,8 @@ func main() {
 		}
 		logger.Log("Trying %s", pingUrl)
 		rep := h.Proxy("add", &pingReply{URL: pingUrl, Name: name})
-		if rep.Args[0].Error != "" {
-			logger.Error("Could not add ping url: %s", rep.Args[0].Error)
+		if rep.Error != "" {
+			logger.Error("Could not add ping url: %s", rep.Error)
 			http.Error(resp, `Could not add ping.`, 500)
 			rep.Action = "error"
 			h.Broadcast(rep)
@@ -483,6 +488,7 @@ func main() {
 		h.Broadcast(rep)
 	})
 
+	// Static content handler
 	http.Handle("/s/",
 		http.StripPrefix("/s/",
 			http.FileServer(http.Dir("static"))))
@@ -490,8 +496,8 @@ func main() {
 	// Socket for page updates.
 	http.HandleFunc("/ws", wsHandler)
 
-	logger.Log("Staring up server at %s\n", *localaddr)
-	if err := http.ListenAndServe(*localaddr, nil); err != nil {
+	logger.Log("Staring up server at %s\n", fmt.Sprintf(":%s", *port))
+	if err := http.ListenAndServe(fmt.Sprintf(":%s", *port), nil); err != nil {
 		logger.Error("Server failed: %s", err.Error())
 	}
 }

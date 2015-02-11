@@ -1,5 +1,12 @@
-* {font-family: "Fira Sans", Arial, Helvetica, "sans serif";}
+* {font-family:"Fira Sans",Arial,Helvetica,"sans serif";margin:0;padding:0;}
+html, body{ background-color:#F9F9F9;}
 .hidden {display:none;}
+#config{display:none;}
 .warn {background-color:yellow;}
 .ack {background-color:green;}
+#time {min-width:2ex;display:inline-block; text-align:right;}
 .offline{background-color:red;}
+#state{margin-top:.5em;}
+#status{margin: 1em;}
+#result{margin:.5em 0;border:1px solid #ddd;}
+#result td{min-width: 6em;}
