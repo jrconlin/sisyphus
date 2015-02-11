@@ -3,18 +3,21 @@
 <head>
 <meta charset="UTF8" />
 <title>Sisyphus - SimplePush tester</title>
-<link type="text/css" rel="stylesheet" href="style.css">
+<link type="text/css" rel="stylesheet" href="/s/style.css">
 </head>
 <body>
 <h1>Sisyphus</h1>
 <h2>Simplepush client tester</h2>
 <div id="status">
     <p id="state">Initializing...</p>
+    <label><input type="checkbox" id="alert" />Play next alert</label>
     <div id="active" class="active hidden">
         <p>Next ping in <span id="timeout"> ... <span id="period">seconds</span></span></p>
 </div>
 </div>
-<div id="config" class="active hidden" >
+<div id="config" class="active" >
+    <table id="result">
+    </table>
     <form>
         <label for="timer">Interval:<input type="range" value="5" min="1" max="300" step="1" name="timer" oninput="document.getElementById('t_val').innerHTML=this.value;"/><span id="t_val">5</span>
             <select name="interval"
@@ -33,13 +36,6 @@
 <script lang="javascript">
     var ws;
     var period = {length:60000, label:"minutes"};
-
-
-    function doReset(msg) {
-        document.getElementById("buzz").play();
-        doUpdate(msg);
-    }
-
 
     function toggleActive() {
         elements = document.getElementsByClassName("active");
@@ -64,6 +60,14 @@
         document.getElementById("state").innerHTML = msg
     }
 
+    function buzz() {
+        console.debug("buzz");
+        if (document.getElementById("alert").checked) {
+            document.getElementById("buzz").play();
+            document.getElementById("alert").checked = false;
+        }
+    }
+
     document.getElementById("ping").addEventListener("click", function(ev) {
             try {
             ws.send(JSON.stringify({"action":"ping"}));
@@ -72,11 +76,72 @@
             }
             return true;
             });
-    // open the websocket connection;
 
+function updateClient(url, name, pinged, state="") {
+    console.debug("update", url, name);
+    if (pinged == undefined) {
+        pinged = Math.floor(Date.now()/1000);
+    }
+    var rows = document.getElementById("result").getElementsByTagName("tr");
+    if (rows.length > 0) {
+        for (var i=0;i<rows.length; i++) {
+            var row = rows[i];
+            row.getElementsByClassName("name").innerHtml=name;
+            if (state == "offline") {
+                buzz();
+                row.className = "offline";
+                return
+            } else {
+            if (row.dataset.url == url) {
+                row.classList.remove("error");
+                row.classList.remove("pinged");
+                row.classList.add("pinged");
+                return
+            }
+            }
+        }
+    }
+    addRow(url, name, pinged, state)
+}
+
+function addRow(url, name, pinged, state="") {
+    console.debug("addRow",url, name, pinged, state);
+    var table = document.getElementById("result");
+    var tr = document.createElement("tr");
+    var now = Math.floor(Date.now()/1000);
+    var cls
+    if (state != "ack") {
+        cls = "warn";
+    }
+    if ((now - pinged) > period.length * 2) {
+        cls = "error";
+        buzz()
+    }
+    if (state != "") {
+        tr.classList.add(state);
+    }
+    tr.classList.add(cls);
+    tr.setAttribute("data-url",url);
+    tr.innerHTML="<td class='name'>"+name+"</td><td class='pinged'>"+(now-pinged)+"</td><td class='state'>"+state+"</td>";
+    table.appendChild(tr);
+}
+
+function showClients(clientList) {
+    var cls = "";
+    clientList.sort().forEach(
+            function(val) {
+                updateClient(val.URL, val.Name, val.Pinged, val.State)
+                if (val.State == "offline") {
+                    buzz()
+               }
+            })
+}
+
+    // open the websocket connection;
 if (window.WebSocket == undefined) {
     // Bitch that they've got an old, crappy browser.
 }
+
 ws = new WebSocket("ws://{{.Host}}/ws");
 ws.onopen = function(e) {
     console.log("Connected, sending hello");
@@ -88,11 +153,20 @@ ws.onmessage = function(e) {
         msg = JSON.parse(e.data);
         switch (msg.action) {
             case "hello":
-                var cnt = msg.arg.ClientCount || "no";
-                setState("Connected with " + cnt + " clients")
+                var cnt = msg.arg.length;
+                setState("Connected with " + cnt + " clients");
+                showClients(msg.arg);
                 break;
             case "connected":
                 toggleActive();
+                break;
+            case "ack":
+                console.debug("Ack", msg.arg);
+                showClients(msg.arg);
+                break;
+            case "ping":
+                console.debug("ping", msg.arg);
+                showClients(msg.arg);
                 break;
             default:
                 console.error("Unknown message", msg);
