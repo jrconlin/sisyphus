@@ -1,5 +1,11 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ *  * License, v. 2.0. If a copy of the MPL was not distributed with this
+ *   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 var endpoint;
 
+/** Stupid logging function
+ */
 function Log(s, cls) {
   console.log(s)
   var txt = document.createTextNode(s);
@@ -9,6 +15,8 @@ function Log(s, cls) {
   document.getElementById("status").appendChild(p);
 }
 
+/** Send info to the push server
+ */
 function send(s, path='/reg', method='POST') {
   var host = document.getElementById("server").value;
   if (!host.startsWith('http')) {
@@ -35,6 +43,8 @@ function send(s, path='/reg', method='POST') {
   return true
 }
 
+/** Set the message handler for the push events
+ */
 function setMessageHandler() {
   navigator.mozSetMessageHandler('push', function(e) {
     Log("Recv'd push #"+e.version+"!")
@@ -48,6 +58,8 @@ function setMessageHandler() {
   Log("Message Handler Set.")
 }
 
+/** Register the endpoint with the server
+ */
 function doRegister() {
   Log("Registering...")
   var req = navigator.push.register();
