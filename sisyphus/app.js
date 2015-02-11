@@ -61,7 +61,16 @@ function setMessageHandler() {
 /** Register the endpoint with the server
  */
 function doRegister() {
-  Log("Registering...")
+  Log("Registering...");
+  var srv = document.getElementById("server");
+  if (srv.value.length == 0) {
+    alert("Server address missing.");
+    if (!srv.classList.contains("error")) {
+        srv.classList.add("error");
+    }
+    return;
+  }
+  srv.classList.remove("error");
   var req = navigator.push.register();
   req.onsuccess = function(e) {
     endpoint = req.result;

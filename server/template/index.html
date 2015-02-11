@@ -10,14 +10,14 @@
 <h1>Sisyphus</h1>
 <h2>Simplepush client tester</h2>
 <div id="status">
-    <div class="ping active hidden">
+    <div class="active hidden">
         <p>Next ping in <span id="time">{{.Period}}</span> <span id="period">seconds</span></p>
-        <p><button id="ping">Ping now</button></p>
+        <p><button id="pingnow">Ping now</button></p>
         <p><label><input type="checkbox" id="alert" />Alert Noise</label></p>
     </div>
     <p id="state">Initializing...</p>
     <table class="active hidden" id="result">
-        <tr><th>Name:</th><th>Seconds since ping</th><th>Status</th><tr>
+        <tr><th>Name:</th><th>Status</th><th></th><tr>
     </table>
 </div>
 <div id="config" class="hidden" >
@@ -59,21 +59,32 @@
         }
     }
 
+    function deleteMe(e) {
+        console.debug(e);
+        ws.send(JSON.stringify({"action":"del", "arg":[{"URL":e}]}));
+        targ = e;
+    }
+
     function updateClient(url, name, pinged, state="") {
         if (pinged == undefined) {
             pinged = Math.floor(Date.now()/1000);
         }
         var rows = document.getElementById("result").getElementsByTagName("tr");
         if (rows.length > 0) {
-            for (var i=1;i<rows.length; i++) {
+            for (var i=0;i<rows.length; i++) {
                 var row = rows[i];
+                if (row.dataset.url == undefined) {
+                    continue
+                }
                 if (row.dataset.url == url) {
-                    row.getElementsByClassName("name").innerHtml=name;
+                    row.getElementsByClassName("name")[0].innerHtml=name;
                     if (state == "offline") {
                         buzz();
                         row.className = "offline";
+                        row.getElementsByClassName("state")[0].innerHTML="offline";
                         return
                     } else {
+                        row.getElementsByClassName("state")[0].innerHtml=state;
                         row.classList.remove("error");
                         row.classList.remove("pinged");
                         row.classList.add("pinged");
@@ -102,7 +113,7 @@
         }
         tr.classList.add(cls);
         tr.setAttribute("data-url",url);
-        tr.innerHTML="<td class='name'>"+name+"</td><td class='pinged'>"+(now-pinged)+"</td><td class='state'>"+state+"</td>";
+        tr.innerHTML="<td class='name'>"+name+"</td><td class='state'>"+state+"</td><td class='ctrl'><button class='delete' onclick='deleteMe(\""+url+"\")'>X</button></td>";
         table.appendChild(tr);
     }
 
@@ -116,6 +127,22 @@
                    }
                 })
     }
+
+    function deleteClient(url) {
+        if (url == undefined) {
+            return false;
+        }
+        var rows = document.getElementById("result").getElementsByTagName("tr");
+        for (var i=1;i<rows.length;i++){
+            var val = rows[i];
+                if (val.dataset.url == url) {
+                    val.parentNode.removeChild(val);
+                    return true;
+                }
+            }
+        return false;
+    }
+
 
     function countdown() {
         var t = document.getElementById("time");
@@ -138,7 +165,7 @@ if (window.WebSocket == undefined) {
     alert("Please use a modern browser.")
 }
 
-document.getElementById("ping").addEventListener("click", function(ev) {
+document.getElementById("pingnow").addEventListener("click", function(ev) {
         try {
             ws.send(JSON.stringify({"action":"ping"}));
         } catch (x) {
@@ -161,7 +188,7 @@ ws.onmessage = function(e) {
         switch (msg.action) {
             case "hello":
                 var cnt = msg.arg.length;
-                setState("Connected with " + cnt + " clients");
+                setState("Connected");
                 showClients(msg.arg);
                 break;
             case "connected":
@@ -174,6 +201,14 @@ ws.onmessage = function(e) {
                 showClients(msg.arg);
                 document.getElementById("time").innerHTML = msg.xtra.Period;
                 break;
+            case "add":
+                showClients(msg.arg);
+                break;
+            case "del":
+                var url = msg.arg[0].URL;
+                console.debug("Got del",msg.arg, url)
+                deleteClient(url);
+                break
             default:
                 console.error("Unknown message", msg);
         }
@@ -184,6 +219,7 @@ ws.onmessage = function(e) {
 ws.onclose = function(e) {
     document.getElementById("disconnect").play();
     toggleActive();
+    setState("Disconnected");
     alert("Uh-oh. lost connection.");
 
     console.log("Closing connection", e);

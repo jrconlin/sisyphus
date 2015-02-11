@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"database/sql"
@@ -80,15 +81,15 @@ type pingReply struct {
 
 const STORE_INSERT = `insert or abort into pings (url, name, pinged, state) values (?, ?, strftime('%s', 'now'), 'new');`
 const STORE_CREATE = `create table if not exists pings (url string primary key,name string, version integer, pinged integer, state string);`
-const STORE_UPDATE = `update pings set state=? where url=?;`
+const STORE_UPDATE = `update pings set state=?, pinged=strftime('%s','now') where url=?;`
 const STORE_DELETE = `delete from pings where url=?;`
 const STORE_QUERY = `select url,name, pinged, state from pings;`
 
 //===
 type store struct {
+	sync.Mutex
 	log *logWriter
 	db  *sql.DB
-	Cmd chan *command
 }
 
 func (s *store) init() (err error) {
@@ -105,7 +106,7 @@ func (s *store) Add(info *pingReply) (err error) {
 }
 
 func (s *store) upd(state, url string) (err error) {
-	_, err = s.db.Exec(STORE_UPDATE, state, url)
+	c, err := s.db.Exec(STORE_UPDATE, state, url)
 	if err != nil {
 		s.log.Error("Upd %s", err.Error())
 	}
@@ -151,10 +152,7 @@ func (s *store) Pings() (pings []*pingReply, err error) {
 		} else {
 			pr.State = "ping"
 		}
-		err := s.ping(pr.URL, body)
-		if err != nil {
-			s.log.Error("Pings %s", err.Error())
-		}
+		go s.ping(pr.URL, body)
 	}
 	return
 }
@@ -176,51 +174,50 @@ func (s *store) ping(url string, body io.Reader) (err error) {
 	return
 }
 
-func (s *store) run() {
-	for {
-		select {
-		case c := <-s.Cmd:
-			switch c.Action {
-			case "hello":
-				pings, err := s.Hello()
-				if err != nil {
-					s.log.Error("Could not get pings: %s", err.Error())
-					continue
-				}
-				if pings == nil {
-					c.Args = []*pingReply{&pingReply{}}
-				} else {
-					c.Args = pings
-				}
-			case "add":
-				if err := s.Add(c.Args[0]); err != nil {
-					s.log.Error("Could not add url %s", err.Error())
-					c.Error = err.Error()
-				}
-			case "ack":
-				if err := s.upd("ack", c.Args[0].URL); err != nil {
-					c.Error = err.Error()
-				}
-			case "del":
-				if err := s.Del(c.Args[0].URL); err != nil {
-					c.Error = err.Error()
-				}
-			case "ping":
-				pings, err := s.Pings()
-				if err == nil {
-					if pings == nil {
-						c.Args = []*pingReply{&pingReply{}}
-					} else {
-						c.Args = pings
-					}
-				} else {
-					c.Error = err.Error()
-				}
-				c.Xtra = struct{ Period int64 }{*period}
-			}
-			s.Cmd <- c
+func (s *store) Cmd(c *command) *command {
+	s.Lock()
+	defer s.Unlock()
+	switch c.Action {
+	case "hello":
+		pings, err := s.Hello()
+		if err != nil {
+			s.log.Error("Could not get pings: %s", err.Error())
+			return c
 		}
+		if pings == nil {
+			c.Args = []*pingReply{&pingReply{}}
+		} else {
+			c.Args = pings
+		}
+	case "add":
+		if err := s.Add(c.Args[0]); err != nil {
+			s.log.Error("Could not add url %s", err.Error())
+			c.Error = err.Error()
+		}
+	case "ack":
+		if err := s.upd("ack", c.Args[0].URL); err != nil {
+			s.log.Error("Could not ack url %s", err.Error())
+			c.Error = err.Error()
+		}
+	case "del":
+		if err := s.Del(c.Args[0].URL); err != nil {
+			c.Error = err.Error()
+		}
+	case "ping":
+		pings, err := s.Pings()
+		if err == nil {
+			if pings == nil {
+				c.Args = []*pingReply{&pingReply{}}
+			} else {
+				c.Args = pings
+			}
+		} else {
+			c.Error = err.Error()
+		}
+		c.Xtra = struct{ Period int64 }{*period}
+	default:
 	}
+	return c
 }
 
 //===
@@ -245,8 +242,8 @@ var h = hub{
 }
 
 func (h *hub) Proxy(action string, ci *pingReply) (rep *command) {
-	h.s.Cmd <- &command{Action: action, Args: []*pingReply{ci}}
-	return <-h.s.Cmd
+	r := h.s.Cmd(&command{Action: action, Args: []*pingReply{ci}})
+	return r
 }
 
 func (h *hub) Broadcast(cmd *command) {
@@ -289,8 +286,7 @@ func (h *hub) run(st *store, period *int64) {
 			}
 		case c := <-h.cmd:
 			// do this directly in case there's a bunch of content in Args
-			h.s.Cmd <- c
-			r := <-h.s.Cmd
+			r := h.s.Cmd(c)
 			h.cmd <- r
 		}
 	}
@@ -318,7 +314,9 @@ func (c *connection) reader() {
 	for {
 		_, raw, err := c.ws.ReadMessage()
 		if err != nil {
-			c.log.Error("Reader failure %s", err.Error())
+			if err != io.EOF {
+				c.log.Error("Reader failure %s", err.Error())
+			}
 			return
 		}
 		cmd := &command{}
@@ -327,7 +325,7 @@ func (c *connection) reader() {
 			return
 		}
 		switch strings.ToLower(cmd.Action) {
-		case "hello", "ping":
+		case "hello", "ping", "del":
 			c.cmd <- cmd
 			repl := <-c.cmd
 			c.Reply(repl)
@@ -390,14 +388,12 @@ func main() {
 
 	st := &store{
 		db:  db,
-		Cmd: make(chan *command),
 		log: logger,
 	}
 	if err = st.init(); err != nil {
 		log.Fatal("Could not create storage: %s", err.Error())
 	}
 
-	go st.run()
 	go h.run(st, period)
 
 	fatal := func(resp http.ResponseWriter, err error) {
@@ -432,30 +428,34 @@ func main() {
 		resp.Header().Add("Access-Control-Allow-Origin", "*")
 		var action = "ack"
 		// future use.
-		if req.Method == "DELETE" {
-			action = "del"
-		}
 		if req.Method == "OPTIONS" {
 			http.Error(resp, "", 200)
 			return
 		}
-		pingUrl := req.PostFormValue("sp")
-		name := req.PostFormValue("name")
+		if ty := req.Header.Get("Content-Type"); ty == "" {
+			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+		}
+		act := req.FormValue("action")
+		if act != "" {
+			action = act
+		}
+		pingUrl := req.FormValue("sp")
+		name := req.FormValue("name")
 		if pingUrl == "" {
 			logger.Error(`Please POST the simplepush url as "sp"`)
 			http.Error(resp, `Missing "sp" url value`, 400)
 			return
 		}
-		logger.Log("Sending ack for %s", name)
 		rep := h.Proxy(action, &pingReply{URL: pingUrl,
-			Name: name, State: "ack"})
+			Name: name, State: action})
 		if rep.Error != "" {
-			logger.Error("Could not add ping url: %s", rep.Error)
-			http.Error(resp, `Could not add ping.`, 500)
+			logger.Error("Could not %s ping url: %s", action, rep.Error)
+			http.Error(resp, fmt.Sprintf("Could not %s ping.", action), 500)
 			rep.Action = "error"
 			h.Broadcast(rep)
 			return
 		}
+		logger.Log(fmt.Sprintf("Sending %s for %s", action, pingUrl))
 		h.Broadcast(rep)
 	})
 
@@ -476,8 +476,15 @@ func main() {
 			http.Error(resp, `Missing "sp" url value`, 400)
 			return
 		}
+		if name == "" {
+			s := strings.Split(pingUrl, "/")
+			name = s[len(s)-1][:8]
+		}
 		logger.Log("Trying %s", pingUrl)
-		rep := h.Proxy("add", &pingReply{URL: pingUrl, Name: name})
+		rep := h.Proxy("add", &pingReply{
+			URL:    pingUrl,
+			Name:   name,
+			Pinged: time.Now().UTC().Unix()})
 		if rep.Error != "" {
 			logger.Error("Could not add ping url: %s", rep.Error)
 			http.Error(resp, `Could not add ping.`, 500)
