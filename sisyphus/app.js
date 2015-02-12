@@ -3,6 +3,7 @@
  *   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 var endpoint;
+var msgCount=0;
 
 /** Stupid logging function
  */
@@ -10,8 +11,14 @@ function Log(s, cls) {
   console.log(s)
   var txt = document.createTextNode(s);
   var p = document.createElement("p");
-  p.className=cls
+  p.className=cls;
   p.appendChild(txt);
+  var stat = document.getElementById("status");
+  if (msgCount > 10) {
+      stat.removeChild(stat.firstChild);
+  }else {
+      msgCount = msgCount + 1;
+  }
   document.getElementById("status").appendChild(p);
 }
 

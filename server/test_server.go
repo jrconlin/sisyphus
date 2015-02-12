@@ -203,6 +203,9 @@ func (s *store) Cmd(c *command) *command {
 			s.log.Error("Could not add url %s", err.Error())
 			c.Error = err.Error()
 		}
+		if c.Args[0].State == "" {
+			c.Args[0].State = "new"
+		}
 	case "ack":
 		if err := s.upd("ack", c.Args[0].URL); err != nil {
 			s.log.Error("Could not ack url %s", err.Error())

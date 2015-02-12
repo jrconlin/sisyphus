@@ -72,28 +72,35 @@
         var rows = document.getElementById("result").getElementsByTagName("tr");
         if (rows.length > 0) {
             for (var i=0;i<rows.length; i++) {
-                var row = rows[i];
-                if (row.dataset.url == undefined) {
-                    continue
-                }
-                if (row.dataset.url == url) {
-                    row.getElementsByClassName("name")[0].innerHtml=name;
-                    if (state == "offline") {
-                        buzz();
-                        row.className = "offline";
-                        row.getElementsByClassName("state")[0].innerHTML="offline";
-                        return
-                    } else {
-                        row.getElementsByClassName("state")[0].innerHtml=state;
-                        row.classList.remove("error");
-                        row.classList.remove("pinged");
-                        row.classList.add("pinged");
-                        return
+                try {
+                    var row = rows[i];
+                    console.debug(row.dataset.url);
+                    if (row.dataset.url == url) {
+                        rr = row;
+                        var nn = row.getElementsByClassName("name")[0];
+                        var st = row.getElementsByClassName("state")[0];
+                        if (name != "") {
+                            nn.innerHTML=name;
+                        }
+                        if (state != "") {
+                            st.innerHTML=state;
+                        }
+                        if (state == "offline") {
+                            buzz();
+                            row.className = "offline";
+                        } else {
+                            row.classList.remove("offline");
+                            row.classList.remove("pinged");
+                            row.classList.add("pinged");
+                       }
+                       return;
                     }
+                } catch(x) {
+                    console.error(x);
                 }
             }
+            addRow(url, name, pinged, state)
         }
-        addRow(url, name, pinged, state)
     }
 
     function addRow(url, name, pinged, state="") {
@@ -122,9 +129,6 @@
         clientList.sort().forEach(
                 function(val) {
                     updateClient(val.URL, val.Name, val.Pinged, val.State)
-                    if (val.State == "offline") {
-                        buzz()
-                   }
                 })
     }
 
