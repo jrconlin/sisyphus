@@ -169,12 +169,15 @@ func (s *store) sendping(url string, body io.Reader) (err error) {
 		s.log.Error("ping %s", err)
 		return
 	}
-	_, err = client.Do(req)
+	resp, err := client.Do(req)
 	if err == nil {
 		s.log.Log("updating %s\n", url)
 		err = s.upd("ping", url)
 	} else {
 		s.log.Error("Failed to push %s", err.Error())
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
 	}
 	return
 }
